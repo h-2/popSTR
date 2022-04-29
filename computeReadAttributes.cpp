@@ -1,3 +1,5 @@
+#define SEQAN_BGZF_NUM_THREADS 2
+
 #include <iostream>
 #include <seqan/file.h>
 #include <seqan/bam_io.h>
@@ -5,6 +7,7 @@
 #include <map>
 #include <string>
 #include <seqan/align.h>
+#include <seqan/align_parallel.h>
 #include <seqan/sequence.h>
 #include <seqan/seq_io.h>
 #include <math.h>
@@ -1007,31 +1010,43 @@ bool chromIsReal(CharString const & chrom)
     return 0;
 }*/
 
-BamAlignmentRecord findMate(BamAlignmentRecord & record, CharString & bamPath, const char* reference)
+BamAlignmentRecord findMate(BamAlignmentRecord const & record, CharString & bamPath, const char *)
 {
     BamAlignmentRecord mate;
-    HtsFile hts_file(toCString(bamPath), "r", reference);
-    if (!loadIndex(hts_file))
+    BamFileIn hts_file(toCString(bamPath));
+//     BamHeader hdr;
+//     readHeader(hdr, hts_file);
+/*
+    auto & con = context(hts_file);
+    auto & chromNames = contigNames(con);
+    CharString const & chromosome = chromNames[record.rNextId];
+*/
+    BamIndex<Bai> bai;
+
+    CharString indexPath = bamPath;
+    append(indexPath, ".bai");
+    if (!open(bai, toCString(indexPath)))
     {
         std::cerr << "ERROR: Could not read index file for " << bamPath << "\n";
         return mate;
     }
-    CharString const & chromosome = hts_file.hdr->target_name[record.rNextId];
-    if (!setRegion(hts_file, toCString(chromosome), record.pNext-10, record.pNext+10))
-    {
-        std::cerr << "ERROR: Could not jump to " << chromosome << ":" << record.pNext << "\n";
-        return mate;
-    }
-    while (readRegion(mate, hts_file))
-    {
-        if (mate.qName == record.qName)
-            break;
-    }
+
+    String<BamAlignmentRecord> recs;
+    viewRecords(recs, hts_file, bai, record.rNextId, record.pNext-10, record.pNext+10);
+//     if (!viewRecords(recs, hts_file, bai, record.rNextId, record.pNext-10, record.pNext+10))
+//     {
+//         std::cerr << "ERROR: Could not jump to " << record.rNextId << ":" << record.pNext << "\n";
+//         return mate;
+//     }
+
+    for (auto & rec : recs)
+        if (rec.qName == record.qName)
+            return std::move(rec);
+
     return mate;
 }
 
-bool lookForExpansion(bam_hdr_t * header,
-                      unsigned chrIdx,
+bool lookForExpansion(char const * const chr,
                       unsigned pos,
                       unsigned seqLength,
                       const vector<float> & bpFreqMotif,
@@ -1042,7 +1057,6 @@ bool lookForExpansion(bam_hdr_t * header,
     pos_triple.i3 = pos;
     //std::vector<float>bpFreqRCMotif(bpFreqMotif.rbegin(), bpFreqMotif.rend()) ;
     unsigned endPos = pos + seqLength - 1;
-    string chr = toCString(header->target_name[chrIdx]);
     if (chromToMotifAndIntervals.count(chr) == 0)
         return false;
 
@@ -1177,21 +1191,37 @@ int main(int argc, char const ** argv)
 
         //Set up hts file and jump to correct chromosome
         CharString const & PN_ID = PnsAndBams[i].i1;
-        HtsFile hts_file(toCString(PnsAndBams[i].i2), "r", reference);
+        BamFileIn hts_file(toCString(PnsAndBams[i].i2));
 
-        int jumpStart = std::max(0,markers[0].STRstart - 1000);
-        int jumpEnd = std::min(markers[finalMarkerIdx].STRend + 1000, jumpStart + 300000000);
-        if (!loadIndex(hts_file))
+        BamHeader hdr;
+        readHeader(hdr, hts_file);
+
+        // Bam Index
+        BamIndex<Bai> bai;
+        CharString indexPath = PnsAndBams[i].i2;
+        append(indexPath, ".bai");
+        if (!open(bai, toCString(indexPath)))
         {
             std::cerr << "ERROR: Could not read index file for " << PnsAndBams[i].i2 << "\n";
             return 1;
         }
 
-        if (!setRegion(hts_file, toCString(markers[0].chrom), jumpStart, jumpEnd))
+        // Bam Region
+        int jumpStart = std::max(0,markers[0].STRstart- 1000);
+        int jumpEnd = std::min(markers[finalMarkerIdx].STRend + 1000, jumpStart + 300000000);
+//         int jumpStart = markers[0].STRstart;
+//         int jumpEnd = markers[finalMarkerIdx].STRend;
+
+        String<BamAlignmentRecord> recs;
+        int32_t chromId = 0;
+        if (!getIdByName(chromId, contigNamesCache(context(hts_file)), markers[0].chrom))
         {
-            cerr << "ERROR: Could not jump to " << markers[0].chrom << ":" << jumpStart << "-" << jumpEnd << "\n";
+            cerr << "ERROR: Could not get chromId\n";
             return 1;
         }
+//         viewRecords(recs, hts_file, bai, chromId, jumpStart, jumpEnd);
+        bool ignore = false;
+        jumpToRegion(hts_file, ignore, chromId, jumpStart, jumpEnd, bai);
 
         //Variables for the start and end coordinates of reads and their mates, length of read, how many repeats to look for and index into string storing marker information
         unsigned bamStart, bamEnd, mateStart, mateEnd, readLength, markerIndex = 0;
@@ -1199,9 +1229,19 @@ int main(int argc, char const ** argv)
         unsigned numToLook = repeatNumbers[motifLength-1];
         //Map from read name, marker chromosome and marker start to info on read-pair with that read name
         unordered_map<Triple<CharString, CharString, int>, ReadInfo> myMap;
-        BamAlignmentRecord record;
-        while (readRegion(record, hts_file))
+
+        while (!atEnd(hts_file) )
         {
+            BamAlignmentRecord record;
+            readRecord(record, hts_file);
+
+            // If we are left of the selected position then we skip this record.
+            if (record.rID < chromId || record.beginPos < jumpStart)
+                continue;
+            // If we are on the next reference or at the end already then we stop.
+            if (record.rID == -1 || record.rID > chromId || record.beginPos >= jumpEnd)
+                break;
+
             //If the read is a duplicate or doesn't pass the quality check I move on
             if (hasFlagQCNoPass(record) || hasFlagDuplicate(record) || !hasFlagMultiple(record))
                 continue;
@@ -1402,8 +1442,7 @@ int main(int argc, char const ** argv)
                     length(markers[currentMarker].motif) > 1)
                 {
                     //Find mate and check if it has repeat tract.
-                    if (lookForExpansion(hts_file.hdr,
-                                         record.rNextId,
+                    if (lookForExpansion(toCString(contigNames(context(hts_file))[record.rNextId]),
                                          record.pNext,
                                          readLength,
                                          markers[currentMarker].motifFrqs,
