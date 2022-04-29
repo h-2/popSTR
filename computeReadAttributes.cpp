@@ -365,7 +365,7 @@ float getPurity(Dna5String & motif, CharString & STRsequence)
 }
 
 //Finds ratio of bases in a sequence with PHRED score higher than 20
-float findRatioOver20(CharString sequence)
+float findRatioOver20(CharString const & sequence)
 {
     unsigned numOver20 = 0;
     int numVal;
@@ -379,7 +379,7 @@ float findRatioOver20(CharString sequence)
 }
 
 //Get value of a tag (ATH! does not work if tag-value is not numeric)
-int getTagValue(BamAlignmentRecord& record, CharString tagName)
+int getTagValue(BamAlignmentRecord& record, CharString const & tagName)
 {
     int returnValue;
     unsigned myIdx = 0;
@@ -409,7 +409,7 @@ unsigned checkForAndRemoveSoftClippingAfter(BamAlignmentRecord& record)
 {
     unsigned nRemoved = 0;
     String<CigarElement<> > cigarString = record.cigar;
-    CharString cigarOperation = cigarString[length(cigarString)-1].operation;
+    CharString const & cigarOperation = cigarString[length(cigarString)-1].operation;
     string cigarOperationStr = toCString(cigarOperation);
     if (cigarOperationStr.compare("S")==0)
     {
@@ -428,7 +428,7 @@ unsigned checkForAndRemoveSoftClippingBefore(BamAlignmentRecord& record)
 {
     unsigned nRemoved = 0;
     String<CigarElement<> > cigarString = record.cigar;
-    CharString cigarOperation = cigarString[0].operation;
+    CharString const & cigarOperation = cigarString[0].operation;
     string cigarOperationStr = toCString(cigarOperation);
     if (cigarOperationStr.compare("S")==0)
     {
@@ -454,7 +454,7 @@ Pair<Triple<CharString, CharString, int>,ReadInfo> computeReadInfo(BamAlignmentR
 
     //Variables for sequence-parts
     Dna5String before, after, before_8, after_8;
-    CharString qualString = record.qual;
+    CharString const & qualString = record.qual;
     ReadInfo mapValue;
     int oldStartCoord = coordinates.i1.i1;
     unsigned motifLength = length(markerInfo.motif), readLength = length(record.seq);
@@ -960,7 +960,7 @@ bool compareMotifs(const std::vector<float> & expansionBpFreqs, const std::vecto
     return false;
 }
 
-bool chromIsReal(CharString chrom)
+bool chromIsReal(CharString const & chrom)
 {
     string * p = std::find (chroms, chroms+22, toCString(chrom));
     if (p != chroms+22)
@@ -1016,7 +1016,7 @@ BamAlignmentRecord findMate(BamAlignmentRecord & record, CharString & bamPath, c
         std::cerr << "ERROR: Could not read index file for " << bamPath << "\n";
         return mate;
     }
-    CharString chromosome = hts_file.hdr->target_name[record.rNextId];
+    CharString const & chromosome = hts_file.hdr->target_name[record.rNextId];
     if (!setRegion(hts_file, toCString(chromosome), record.pNext-10, record.pNext+10))
     {
         std::cerr << "ERROR: Could not jump to " << chromosome << ":" << record.pNext << "\n";
@@ -1176,7 +1176,7 @@ int main(int argc, char const ** argv)
         time_t pnStart = time(0);
 
         //Set up hts file and jump to correct chromosome
-        CharString PN_ID = PnsAndBams[i].i1;
+        CharString const & PN_ID = PnsAndBams[i].i1;
         HtsFile hts_file(toCString(PnsAndBams[i].i2), "r", reference);
 
         int jumpStart = std::max(0,markers[0].STRstart - 1000);
